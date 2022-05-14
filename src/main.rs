@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    fmt::{self, format},
-    hash::Hash,
+    fmt::{self},
     io,
     num::ParseFloatError,
-    string,
 };
 
 #[derive(Clone)]
 enum RispExp {
+    Bool(bool),
     Symbol(String),
     Number(f64),
     List(Vec<RispExp>),
@@ -64,10 +63,16 @@ fn read_seq<'a>(tokens: &'a [String]) -> Result<(RispExp, &'a [String]), RispErr
 }
 
 fn parse_atom(token: &str) -> RispExp {
-    let potential_float: Result<f64, ParseFloatError> = token.parse();
-    match potential_float {
-        Ok(v) => RispExp::Number(v),
-        Err(_) => RispExp::Symbol(token.to_string().clone()),
+    match token.as_ref() {
+        "true" => RispExp::Bool(true),
+        "false" => RispExp::Bool(false),
+        _ => {
+            let potential_float: Result<f64, ParseFloatError> = token.parse();
+            match potential_float {
+                Ok(v) => RispExp::Number(v),
+                Err(_) => RispExp::Symbol(token.to_string().clone()),
+            }
+        }
     }
 }
 
@@ -80,6 +85,25 @@ fn parse_single_float(exp: &RispExp) -> Result<f64, RispError> {
 
 fn parse_list_of_floats(args: &[RispExp]) -> Result<Vec<f64>, RispError> {
     args.iter().map(|x| parse_single_float(x)).collect()
+}
+
+macro_rules! ensure_tonicity {
+    ($check_fn:expr) => {{
+        |args: &[RispExp]| -> Result<RispExp, RispError> {
+            let floats = parse_list_of_floats(args)?;
+            let first = floats.first().ok_or(RispError::Reason(
+                "expected at least one number".to_string(),
+            ))?;
+            let rest = &floats[1..];
+            fn f(prev: &f64, xs: &[f64]) -> bool {
+                match xs.first() {
+                    Some(x) => $check_fn(prev, x) && f(x, &xs[1..]),
+                    None => true,
+                }
+            }
+            Ok(RispExp::Bool(f(first, rest)))
+        }
+    }};
 }
 
 fn default_env() -> RispEnv {
@@ -106,11 +130,37 @@ fn default_env() -> RispEnv {
         }),
     );
 
+    data.insert(
+        "=".to_string(),
+        RispExp::Func(ensure_tonicity!(|a, b| a == b)),
+    );
+
+    data.insert(
+        ">".to_string(),
+        RispExp::Func(ensure_tonicity!(|a, b| a > b)),
+    );
+
+    data.insert(
+        ">=".to_string(),
+        RispExp::Func(ensure_tonicity!(|a, b| a >= b)),
+    );
+
+    data.insert(
+        "<".to_string(),
+        RispExp::Func(ensure_tonicity!(|a, b| a < b)),
+    );
+
+    data.insert(
+        "<=".to_string(),
+        RispExp::Func(ensure_tonicity!(|a, b| a <= b)),
+    );
+
     RispEnv { data: data }
 }
 
 fn eval(exp: &RispExp, env: &mut RispEnv) -> Result<RispExp, RispError> {
     match exp {
+        RispExp::Bool(_a) => Ok(exp.clone()),
         RispExp::Symbol(k) => env
             .data
             .get(k)
@@ -143,6 +193,7 @@ fn eval(exp: &RispExp, env: &mut RispEnv) -> Result<RispExp, RispError> {
 impl fmt::Display for RispExp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let str = match self {
+            RispExp::Bool(a) => a.to_string(),
             RispExp::Symbol(s) => s.clone(),
             RispExp::Number(n) => n.to_string(),
             RispExp::List(list) => {
